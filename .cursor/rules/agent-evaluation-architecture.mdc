@@ -1,0 +1,19 @@
+---
+alwaysApply: false
+description: Implementation architecture and evaluation workflow for agent-based systems derived from the alpha implementation guide.
+---
+
+# Agent Evaluation Architecture (Reference)
+
+This summarizes the agent-oriented evaluation approach for LegalBench and points to concrete examples in [.docs/legalbench_implementation_alpha.md](mdc:.docs/legalbench_implementation_alpha.md).
+
+- Components:
+
+  - Task loader: structured loading from local JSON/TSV or HuggingFace; Pydantic models for metadata.
+  - Instrumented agent: execution traces with tool calls, chain steps, token usage, retries.
+  - Evaluation engine: per-task metrics (balanced accuracy, F1, stemming/tolerance, manual eval), result aggregation and persistence.
+  - Prompt manager: base prompts, few-shot variants, and rule-description heuristics.
+  - RAG evaluator: retrieval indexing, augmented prompts, retrieval metrics.
+  - Optional API and DB layer: background job management and result storage.
+
+- Use this guide when extending evaluation beyond the built-in scripts in [evaluation.py](mdc:evaluation.py) and [utils.py](mdc:utils.py). Keep metric mappings consistent with the paper and [CLAUDE.md](mdc:CLAUDE.md).

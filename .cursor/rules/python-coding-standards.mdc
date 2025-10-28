@@ -1,0 +1,28 @@
+---
+globs: *.py
+---
+
+# Python Standards and Evaluation Rules
+
+- Runtime and tooling:
+
+  - Python ≥ 3.10
+  - Formatting with Black (line length 100) and Ruff per [pyproject.toml](mdc:pyproject.toml)
+  - Type checks with mypy (targeting Python 3.10+)
+
+- Evaluation policy (align with [evaluation.py](mdc:evaluation.py) and [CLAUDE.md](mdc:CLAUDE.md)):
+
+  - Default classification metric: balanced accuracy (handle label imbalance).
+  - F1-based tasks: `ssla_*`, `successor_liability` (multi-extraction).
+  - Special handlers: `definition_extraction` (stemming normalization), `sara_numeric` (tolerance), `citation_prediction_open`.
+  - Manual evaluation: `rule_qa`.
+
+- Normalization: Follow `normalize()` behavior in [evaluation.py](mdc:evaluation.py) for punctuation, whitespace, lowercase, and optional stemming when applicable.
+
+- Data integrity:
+
+  - Do not convert LegalBench TSVs to JSON; prompts assume TSV columns.
+  - Preserve TSV column names used in templates (see [utils.py](mdc:utils.py) and task `base_prompt.txt`).
+
+- Prompts:
+  - Use repository-provided templates and `generate_prompts()` from [utils.py](mdc:utils.py) where applicable.

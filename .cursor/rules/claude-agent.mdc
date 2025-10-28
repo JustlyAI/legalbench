@@ -1,0 +1,837 @@
+---
+description: When dealing with Claude-Agent-SDK
+alwaysApply: false
+---
+---
+name: claude-agent
+description: When programming with claude-agent-sdk
+alwaysApply: false
+---
+
+## Rule 1: Claude Agent SDK Core Patterns (Always Apply)
+
+````
+---
+alwaysApply: true
+description: Claude Agent SDK core usage patterns and best practices
+---
+
+# Claude Agent SDK Core Patterns
+
+The github repository for the claude agent sdk is https://github.com/anthropics/claude-agent-sdk-python
+
+## Interaction Mode Selection
+- **Use `query()`** for: One-shot tasks, batch processing, CLI tools, independent operations
+- **Use `ClaudeSDKClient`** for: Multi-turn conversations, interactive apps, session management, response-driven logic
+
+## Essential Configuration
+Always include these in `ClaudeAgentOptions`:
+```python
+ClaudeAgentOptions(
+    setting_sources=["project"],  # REQUIRED for CLAUDE.md loading
+    max_turns=10,                 # Always set limits
+    permission_mode="acceptEdits", # Recommended for production (SDK v2.0+)
+    allowed_tools=[
+        # File operations (4)
+        "Read", "Write", "Edit", "Bash",
+        # Search & discovery (2)
+        "Grep", "Glob",
+        # Code execution (1)
+        "code_execution_20250825",
+        # Web research (2) - if org-enabled
+        "web_search_20250305", "web_fetch_20250910"
+    ]  # 9 tools available by default in SDK 0.1.4+
+)
+````
+
+## Session Management
+
+Always capture session_id from SystemMessage init:
+
+```python
+if isinstance(message, SystemMessage) and message.subtype == 'init':
+    session_id = message.data.get('session_id')
+```
+
+## Message Processing Pattern
+
+```python
+async for message in client.receive_response():
+    # Handle session creation first
+    if isinstance(message, SystemMessage):
+        if message.subtype == 'init':
+            # Create session in database
+
+    # Store message immediately
+    await session_manager.store_message(message)
+
+    # Handle finalization
+    if isinstance(message, ResultMessage):
+        await session_manager.finalize_session(session_id, message)
+```
+
+## Cost Tracking
+
+Always extract and log costs from ResultMessage:
+
+```python
+cost = message.total_cost_usd
+if cost:
+    logger.info(f"Session cost: ${cost:.6f}")
+```
+
+```
+
+## Rule 2: Tool Management and Safety
+```
+
+---
+
+globs: \*.py
+description: Claude Agent SDK tool creation, safety patterns, and permission controls
+
+---
+
+# Claude Agent SDK Tool Management
+
+## Custom Tool Creation Pattern
+
+```python
+@tool("tool_name", "Clear description", {"param": type})
+async def tool_name(args: dict[str, Any]) -> dict[str, Any]:
+    # Input validation
+    required = ["param"]
+    if not all(k in args for k in required):
+        return {"is_error": True, "content": [{"type": "text", "text": "Missing required parameters"}]}
+
+    # Tool logic here
+    result = process(args)
+
+    return {
+        "content": [{"type": "text", "text": str(result)}]
+    }
+```
+
+## MCP Server Setup
+
+```python
+# For in-process tools (recommended)
+server = create_sdk_mcp_server(
+    name="my_tools",
+    version="1.0.0",
+    tools=[tool1, tool2]
+)
+
+options = ClaudeAgentOptions(
+    mcp_servers={"my_tools": server},
+    allowed_tools=["mcp__my_tools__tool1", "mcp__my_tools__tool2"]
+)
+```
+
+## Safety Hooks Pattern
+
+```python
+async def validate_tool_use(input_data: dict[str, Any], tool_use_id: str | None, context) -> dict[str, Any]:
+    tool_name = input_data.get('tool_name', '')
+
+    # Block dangerous operations
+    if tool_name == 'Bash' and 'rm -rf' in input_data.get('tool_input', {}):
+        return {
+            'hookSpecificOutput': {
+                'hookEventName': 'PreToolUse',
+                'permissionDecision': 'deny',
+                'permissionDecisionReason': 'Dangerous command blocked'
+            }
+        }
+
+    return {'behavior': 'allow'}
+
+options = ClaudeAgentOptions(
+    hooks={
+        'PreToolUse': [HookMatcher(hooks=[validate_tool_use])],
+        'PostToolUse': [HookMatcher(hooks=[audit_hook])]
+    }
+)
+```
+
+## Permission Mode Guidelines (SDK v2.0+)
+
+**Valid Permission Modes:**
+
+- `acceptEdits` - Auto-accept file modifications (✅ **recommended for production**)
+- `bypassPermissions` - Skip all prompts (development/testing only)
+- `default` - SDK default behavior
+- `plan` - Planning mode for specialized workflows
+
+**DEPRECATED:** ❌ `manual` mode does not exist in SDK v2.0+
+
+**Usage Guidance:**
+
+- **Production**: `acceptEdits` (balanced safety with automation)
+- **Development**: `bypassPermissions` (rapid iteration)
+- **Default**: `default` (let SDK decide)
+
+```
+
+## Rule 3: Error Handling and Resilience
+```
+
+---
+
+globs: \*.py
+description: Claude Agent SDK error handling patterns and resilience strategies
+
+---
+
+# Claude Agent SDK Error Handling
+
+## Core Exception Types
+
+```python
+from claude_agent_sdk import (
+    CLINotFoundError,      # CLI not installed
+    CLIConnectionError,    # Connection issues
+    ProcessError,          # Process failures (check exit_code)
+    CLIJSONDecodeError     # JSON parsing errors
+)
+
+try:
+    async for message in query(prompt="...", options=options):
+        # Process messages
+        pass
+except CLINotFoundError:
+    print("Install Claude Code: npm install -g @anthropic-ai/claude-code")
+except CLIConnectionError as e:
+    print(f"Connection failed: {e}")
+except ProcessError as e:
+    print(f"Process failed (exit {e.exit_code}): {e}")
+except CLIJSONDecodeError as e:
+    print(f"JSON parsing failed: {e}")
+```
+
+## Retry Pattern with Exponential Backoff
+
+```python
+import asyncio
+from claude_agent_sdk import CLIConnectionError, ProcessError
+
+async def robust_query(prompt: str, max_retries: int = 3):
+    for attempt in range(max_retries):
+        try:
+            async for message in query(prompt=prompt, options=options):
+                yield message
+            return
+        except (CLIConnectionError, ProcessError) as e:
+            if attempt < max_retries - 1:
+                delay = 2 ** attempt  # Exponential backoff
+                print(f"Attempt {attempt + 1} failed, retrying in {delay}s: {e}")
+                await asyncio.sleep(delay)
+            else:
+                print(f"All {max_retries} attempts failed")
+                raise
+```
+
+## Connection Pool Management
+
+```python
+# Always use async context manager for automatic cleanup
+async with DatabasePool(database_url) as pool:
+    result = await pool.execute_query("SELECT * FROM sessions")
+
+# Or manual management with try/finally
+session_manager = SessionManager(database_url)
+try:
+    await session_manager.initialize()
+    # Use session_manager
+finally:
+    await session_manager.close()
+```
+
+## Graceful Degradation
+
+```python
+# Fall back to JSON mode if PostgreSQL unavailable
+try:
+    session_manager = SessionManager(database_url)
+    await session_manager.initialize()
+except Exception as e:
+    logger.warning(f"PostgreSQL unavailable: {e}. Using JSON mode.")
+    session_manager = None
+
+# Continue with JSON-based session storage
+if session_manager:
+    await session_manager.create_session(session_id, config_data)
+else:
+    save_session_to_json(session_id)
+```
+
+```
+
+## Rule 4: Session and Memory Management
+```
+
+---
+
+globs: \*.py
+description: Claude Agent SDK session management and memory optimization
+
+---
+
+# Claude Agent SDK Session Management
+
+## Session Lifecycle Pattern
+
+```python
+# 1. Create session from SystemMessage
+if isinstance(message, SystemMessage) and message.subtype == 'init':
+    session = await session_manager.create_session(
+        session_id=message.data['session_id'],
+        config_data=message.data,
+        matter_id=matter_id
+    )
+
+# 2. Store every message immediately (no buffering)
+await session_manager.store_message(message)
+
+# 3. Finalize on ResultMessage
+if isinstance(message, ResultMessage):
+    await session_manager.finalize_session(session.session_id, message)
+```
+
+## Session Resumption
+
+```python
+# Resume existing session
+options = ClaudeAgentOptions(resume=session_id)
+
+# Or fork to new session (branch from existing)
+options = ClaudeAgentOptions(
+    resume=session_id,
+    fork_session=True  # Creates new session ID
+)
+```
+
+## Memory Optimization
+
+```python
+# Selective CLAUDE.md loading
+options = ClaudeAgentOptions(
+    setting_sources=["project"],  # Only project settings
+    # Avoid: ["user", "project", "local"] - loads everything
+)
+
+# Token limits
+options = ClaudeAgentOptions(
+    max_turns=5,              # Limit conversation length
+    max_thinking_tokens=8000  # Control reasoning capacity
+)
+
+# Progressive loading with Skills
+# Use Skills for large reference materials instead of system prompts
+```
+
+## Context Compaction
+
+```python
+# Automatic compaction at ~95% capacity
+# Or manual compaction via /compact command
+# Preserves key information, reduces tokens by 84%
+```
+
+## Caching Strategy
+
+```python
+# Leverage automatic caching:
+# - System prompts cached automatically
+# - CLAUDE.md content cached
+# - Tool definitions cached
+# - Benefits: 85% latency reduction, 90% cost reduction
+```
+
+```
+
+## Rule 5: Performance and Cost Optimization
+```
+
+---
+
+globs: \*.py
+description: Claude Agent SDK performance optimization and cost management
+
+---
+
+# Claude Agent SDK Performance Optimization
+
+## Code Execution (SDK 0.1.4+)
+
+**IMPORTANT:** Code execution is fully integrated in SDK 0.1.4+. It's always available by default - no beta headers or special configuration needed!
+
+```python
+# ✅ CORRECT - Code execution in SDK 0.1.4+
+ClaudeAgentOptions(
+    allowed_tools=["Read", "Write", "Bash", "code_execution_20250825"]
+    # That's it! No extra_args, no beta headers
+    # Code execution is now a standard tool
+)
+
+# ❌ WRONG - DO NOT use beta headers (causes --betas CLI error)
+# options_dict["extra_args"] = {"betas": "code-execution-2025-08-25"}  # BROKEN in SDK 0.1.4+
+```
+
+**What Changed in SDK 0.1.4+:**
+
+- Code execution fully integrated (no longer beta)
+- No `extra_args["betas"]` needed (causes CLI error if present)
+- Just add `"code_execution_20250825"` to `allowed_tools`
+- Always available by default (no opt-in required)
+
+## Cost Tracking Pattern
+
+```python
+# Always track costs from ResultMessage
+async for message in client.receive_response():
+    if isinstance(message, ResultMessage):
+        cost = message.total_cost_usd
+        usage = message.usage or {}
+
+        logger.info(f"Session cost: ${cost:.6f}")
+        logger.info(f"Tokens: {usage.get('total_tokens', 0)}")
+        logger.info(f"Cache: {usage.get('cache_read_input_tokens', 0)} read, "
+                   f"{usage.get('cache_creation_input_tokens', 0)} created")
+
+        # Store in database
+        await session_manager.finalize_session(session_id, message)
+```
+
+## Database Connection Optimization
+
+```python
+# Use connection pooling for performance
+pool = DatabasePool(
+    database_url,
+    min_size=2,      # Keep connections warm
+    max_size=10,     # Scale up as needed
+    command_timeout=60.0  # Reasonable timeout
+)
+
+# Async context manager for automatic cleanup
+async with pool as db_pool:
+    results = await db_pool.execute_query("SELECT * FROM sessions")
+```
+
+## Query Optimization
+
+```python
+# Efficient session queries
+sessions = await session_manager.list_sessions(
+    matter_id=matter_id,
+    limit=20  # Always limit results
+)
+
+# Fast full-text search (uses PostgreSQL GIN index)
+results = await session_manager.search_sessions(
+    search_text="statute of limitations",
+    matter_id=matter_id
+)
+
+# Efficient message retrieval
+detail = await session_manager.get_session_detail(session_id)
+# Returns session + messages in single query with JOIN
+```
+
+## Token Efficiency Tips
+
+```python
+# 1. Use retrieval over inclusion
+grep_results = await query(
+    prompt=f"Search codebase for: {query}",
+    options=ClaudeAgentOptions(allowed_tools=["Grep"])
+)
+
+# 2. Progressive loading with Skills
+# Skills provide context without token cost
+# Use for large reference materials
+
+# 3. Structured CLAUDE.md files
+# Put essentials first, optional info later
+# Automatic compaction removes stale content
+
+# 4. Consistent prompts leverage caching
+system_prompt = "You are a legal assistant."
+# Reuse identical prompts across requests
+```
+
+## Monitoring and Observability
+
+```python
+# Track performance metrics
+start_time = asyncio.get_event_loop().time()
+
+async for message in query(prompt=prompt, options=options):
+    if isinstance(message, ResultMessage):
+        duration = asyncio.get_event_loop().time() - start_time
+        logger.info(f"Query completed in {duration:.2f}s")
+
+        # Track costs over time
+        await track_cost_metrics(message.total_cost_usd, duration)
+```
+
+```
+
+## Rule 6: Testing and Development Patterns
+```
+
+---
+
+globs: test\__.py, _\_test.py
+description: Claude Agent SDK testing patterns and development workflows
+
+---
+
+# Claude Agent SDK Testing Patterns
+
+## Unit Test Custom Tools
+
+```python
+import pytest
+from my_tools import calculate
+
+@pytest.mark.asyncio
+async def test_calculate_tool():
+    # Test successful calculation
+    result = await calculate({"expression": "2 + 3"})
+    assert result["content"][0]["text"] == "5"
+
+    # Test error handling
+    result = await calculate({"expression": "invalid"})
+    assert result.get("is_error") == True
+
+@pytest.mark.asyncio
+async def test_tool_validation():
+    # Test missing parameters
+    result = await calculate({})
+    assert "Missing required parameters" in result["content"][0]["text"]
+```
+
+## Integration Test SDK Queries
+
+```python
+@pytest.mark.asyncio
+async def test_query_with_tools():
+    options = ClaudeAgentOptions(
+        mcp_servers={"calc": calculator_server},
+        allowed_tools=["mcp__calc__calculate"],
+        max_turns=3,
+        permission_mode="bypassPermissions"  # For testing (SDK v2.0+)
+    )
+
+    messages = []
+    async for message in query(
+        prompt="Calculate 15 * 7",
+        options=options
+    ):
+        messages.append(message)
+
+    # Verify response contains calculation
+    assistant_messages = [m for m in messages if isinstance(m, AssistantMessage)]
+    assert len(assistant_messages) > 0
+    assert "105" in assistant_messages[0].content[0].text
+
+@pytest.mark.asyncio
+async def test_session_lifecycle():
+    # Test full session creation, message storage, finalization
+    session_manager = SessionManager(test_database_url)
+    await session_manager.initialize()
+
+    try:
+        # Simulate SystemMessage
+        session_id = uuid4()
+        config_data = {"model": "claude-sonnet-4-5"}
+
+        session = await session_manager.create_session(
+            session_id, config_data, "test-matter"
+        )
+        assert session.matter_id == "test-matter"
+
+        # Simulate message storage and finalization
+        # ... test logic ...
+
+    finally:
+        await session_manager.close()
+```
+
+## Mock SDK for Testing
+
+```python
+from unittest.mock import AsyncMock, MagicMock
+
+async def mock_query_response():
+    """Mock successful query response"""
+    messages = [
+        SystemMessage(subtype="init", data={"session_id": "test-123"}),
+        AssistantMessage(content=[TextBlock(text="Hello, I can help!")]),
+        ResultMessage(
+            subtype="success",
+            duration_ms=1500,
+            num_turns=1,
+            total_cost_usd=0.0015,
+            usage={"total_tokens": 150}
+        )
+    ]
+
+    for message in messages:
+        yield message
+
+def mock_claude_sdk():
+    """Mock ClaudeSDKClient for testing"""
+    mock_client = MagicMock()
+    mock_client.query = AsyncMock()
+    mock_client.receive_response = mock_query_response
+    mock_client.connect = AsyncMock()
+    mock_client.disconnect = AsyncMock()
+    return mock_client
+```
+
+## Test Configuration Patterns
+
+```python
+def get_test_options():
+    """Standard test configuration"""
+    return ClaudeAgentOptions(
+        permission_mode="bypassPermissions", # No restrictions (SDK v2.0+)
+        allowed_tools=["Read", "Write", "Bash", "code_execution_20250825"], # Full access + code execution
+        max_turns=5,                     # Short conversations
+        setting_sources=[],              # No filesystem dependencies
+        model="claude-sonnet-4-5"        # Consistent model
+    )
+
+@pytest.fixture
+async def test_session_manager():
+    """Provide test database session manager"""
+    manager = SessionManager("postgresql://test:test@localhost:5433/test")
+    await manager.initialize()
+    try:
+        yield manager
+    finally:
+        await manager.close()
+```
+
+## Performance Testing
+
+```python
+import time
+
+@pytest.mark.asyncio
+async def test_query_performance():
+    """Test query response time"""
+    options = get_test_options()
+
+    start_time = time.time()
+    async for message in query(prompt="Say hello", options=options):
+        pass
+    duration = time.time() - start_time
+
+    assert duration < 5.0  # Should complete within 5 seconds
+    print(f"Query took {duration:.2f}s")
+
+@pytest.mark.asyncio
+async def test_concurrent_queries():
+    """Test multiple concurrent queries"""
+    options = get_test_options()
+
+    async def single_query(i):
+        async for message in query(prompt=f"Query {i}", options=options):
+            pass
+        return i
+
+    # Run 5 queries concurrently
+    results = await asyncio.gather(*[single_query(i) for i in range(5)])
+    assert len(results) == 5
+```
+
+```
+
+## Rule 7: Database and Session Storage
+```
+
+---
+
+globs: _infrastructure_.py, _db_.py, _models_.py
+description: Claude Agent SDK database integration and session storage patterns
+
+---
+
+# Claude Agent SDK Database Integration
+
+## SessionManager Initialization
+
+```python
+from src.shared.infrastructure.session_manager import SessionManager
+
+# Always use async context manager for automatic cleanup
+async with SessionManager(database_url) as session_manager:
+    # Use session_manager here
+    sessions = await session_manager.list_sessions()
+
+# Or manual management with proper error handling
+session_manager = SessionManager(database_url)
+try:
+    await session_manager.initialize()
+    # Use session_manager
+except Exception as e:
+    logger.error(f"SessionManager initialization failed: {e}")
+    # Fall back to JSON mode
+finally:
+    await session_manager.close()
+```
+
+## Message Storage Pattern
+
+```python
+async def store_sdk_messages(session_manager: SessionManager, session_id: UUID):
+    """Store all SDK messages immediately"""
+    async for message in client.receive_response():
+        # Always store immediately (no buffering for durability)
+        try:
+            await session_manager.store_message(message, session_id)
+        except Exception as e:
+            logger.error(f"Failed to store message: {e}")
+            # Continue processing - don't crash the conversation
+```
+
+## Text Extraction for Search
+
+```python
+def _extract_text(self, message: Any) -> Optional[str]:
+    """Extract searchable text from different message types"""
+    if isinstance(message, UserMessage):
+        return str(message.content)
+
+    elif isinstance(message, AssistantMessage):
+        text_parts = []
+        for block in message.content:
+            if isinstance(block, TextBlock):
+                text_parts.append(block.text)
+            elif isinstance(block, ToolResultBlock):
+                # Include tool results for better search
+                if block.content:
+                    if isinstance(block.content, str):
+                        text_parts.append(block.content)
+        return " ".join(text_parts) if text_parts else None
+
+    elif isinstance(message, SystemMessage):
+        return f"System: {message.subtype} (model: {message.data.get('model', 'unknown')})"
+
+    elif isinstance(message, ResultMessage):
+        if message.is_error and message.error_message:
+            return f"Error: {message.error_message}"
+        return "Session result"
+
+    return None
+```
+
+## Cost Precision Handling
+
+```python
+# ALWAYS convert float costs via string to preserve precision
+@field_validator('total_cost_usd', mode='before')
+@classmethod
+def convert_cost_to_decimal(cls, v: Any) -> Optional[Decimal]:
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        return v
+    # Convert to string first to preserve exact decimal value
+    return Decimal(str(v))
+
+# Usage in finalization
+async def finalize_session(self, session_id: UUID, result_message: ResultMessage):
+    total_cost = None
+    if result_message.total_cost_usd is not None:
+        total_cost = Decimal(str(result_message.total_cost_usd))  # Precision preserved
+```
+
+## Database Query Patterns
+
+```python
+# Efficient session listing with filters
+async def list_sessions(self, matter_id: Optional[str] = None, limit: int = 20):
+    query = """
+        SELECT * FROM sessions
+        WHERE ($1::TEXT IS NULL OR matter_id = $1)
+        ORDER BY created_at DESC
+        LIMIT $2
+    """
+    rows = await self.db_pool.execute_query(query, matter_id, limit)
+    return [SessionModel(**row) for row in rows]
+
+# Full-text search using PostgreSQL
+async def search_sessions(self, search_text: str, matter_id: Optional[str] = None):
+    query = """
+        SELECT DISTINCT s.* FROM sessions s
+        JOIN messages m ON s.session_id = m.session_id
+        WHERE to_tsvector('english', m.content_text) @@ plainto_tsquery('english', $1)
+        AND ($2::TEXT IS NULL OR s.matter_id = $2)
+        ORDER BY s.created_at DESC
+        LIMIT 20
+    """
+    rows = await self.db_pool.execute_query(query, search_text, matter_id)
+    return [SessionModel(**row) for row in rows]
+```
+
+## Pydantic Model Validation
+
+```python
+class SessionModel(BaseModel):
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,  # For UUID, Decimal
+        populate_by_name=True,
+    )
+
+    session_id: UUID
+    matter_id: Optional[str] = None
+
+    @field_validator('topics', 'tools_used', 'citations', mode='before')
+    @classmethod
+    def convert_none_to_empty_list(cls, v: Any) -> List[str]:
+        """Convert None to empty list for database compatibility"""
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        return []
+```
+
+## Connection Pool Configuration
+
+```python
+class DatabasePool:
+    def __init__(
+        self,
+        database_url: str,
+        min_size: int = 2,      # Keep connections warm
+        max_size: int = 10,     # Scale up for load
+        command_timeout: float = 60.0  # Reasonable timeout
+    ):
+        # Optimized for CLI usage patterns
+```
+
+## Error Handling in Database Operations
+
+```python
+async def execute_query(self, query: str, *args):
+    async with self._pool.acquire() as conn:
+        try:
+            rows = await conn.fetch(query, *args)
+            return [dict(row) for row in rows]
+        except asyncpg.PostgresError as e:
+            logger.error(f"Database error: {e}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Args: {args}")
+            raise
+```
+
+```
+
+These Cursor Rules provide comprehensive guidance for working with the Claude Agent SDK in your project. They cover core patterns, safety practices, performance optimization, testing strategies, and database integration. The rules are designed to be applied automatically (alwaysApply: true) or selectively based on file patterns and user needs.
+```

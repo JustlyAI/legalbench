@@ -1,0 +1,7 @@
+README.md
+pyproject.toml
+legalbench.egg-info/PKG-INFO
+legalbench.egg-info/SOURCES.txt
+legalbench.egg-info/dependency_links.txt
+legalbench.egg-info/requires.txt
+legalbench.egg-info/top_level.txt
